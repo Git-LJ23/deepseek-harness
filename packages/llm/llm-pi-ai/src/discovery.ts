@@ -270,17 +270,53 @@ export async function discoverModels(
   request: LlmModelDiscoveryOperation,
   storedProfile?: () => StoredModelDiscoveryProfile | undefined,
 ): Promise<readonly LlmDiscoveredModel[]> {
+  // An explicitly configured endpoint wins over the bundled snapshot: the
+  // snapshot is baked at build time and cannot know a provider's newest
+  // releases. Catalog routes additionally try their own listable endpoint
+  // live (it needs no auth); any live failure falls back to the snapshot,
+  // preserving the previous offline behavior.
+  const liveEndpoints: { baseURL: string; api: string; apiKey: string | undefined }[] = []
+  if (request.baseURL !== undefined && request.baseURL.length > 0) {
+    liveEndpoints.push({ baseURL: request.baseURL, api: request.api ?? 'openai-completions', apiKey: request.apiKey })
+  }
   // A catalog route already has its answer, and a better one: the installed
   // entries carry context windows and output caps no listing endpoint reports.
   if (request.provider !== undefined) {
     const installed = catalogModels(request.provider)
     if (installed.size > 0) {
-      return [...installed.values()].map(model => ({
+      const seen = new Set<string>()
+      for (const model of installed.values()) {
+        const { api, baseUrl } = model
+        if (
+          typeof baseUrl === 'string'
+          && baseUrl.length > 0
+          && typeof api === 'string'
+          && LISTABLE_PROTOCOLS.has(api)
+          && !seen.has(`${api} ${baseUrl}`)
+        ) {
+          seen.add(`${api} ${baseUrl}`)
+          liveEndpoints.push({ baseURL: baseUrl, api: request.api ?? api, apiKey: undefined })
+        }
+      }
+      const snapshot = () => [...installed.values()].map(model => ({
         id: model.id,
         name: model.name,
         contextWindow: model.contextWindow,
         maxTokens: model.maxTokens,
       }))
+      for (const endpoint of liveEndpoints) {
+        try {
+          return await discoverModels({
+            ...(request.signal === undefined ? {} : { signal: request.signal }),
+            ...(endpoint.apiKey === undefined ? {} : { apiKey: endpoint.apiKey }),
+            baseURL: endpoint.baseURL,
+            api: endpoint.api,
+          })
+        } catch (error: unknown) {
+          if (request.signal?.aborted) throw error
+        }
+      }
+      return snapshot()
     }
   }
   if (request.baseURL === undefined || request.baseURL.length === 0) {

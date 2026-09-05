@@ -36,6 +36,32 @@ import type {
  */
 const NO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
+/**
+ * Docs-attested wire protocols for catalog-unknown models on mixed-protocol
+ * routes (e.g. OpenCode Go): no route-wide protocol can be inherited, so each
+ * id resolves from the provider's official endpoint table
+ * (/v1/chat/completions -> openai-completions, /v1/responses ->
+ * openai-responses, /v1/messages -> anthropic-messages).
+ */
+const GO_DOC_PROTOCOLS: Record<string, readonly [Api, string]> = {
+  'glm-5.3-flash': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'omen-alpha': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'longcat-2.0': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'deepseek-v4-flash-vision-exp': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'hy4-preview': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'kimi-k2.5': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'glm-5': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'mimo-v2-pro': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'mimo-v2-omni': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'hy3-preview': ['openai-completions', 'https://opencode.ai/zen/go/v1'],
+  'minimax-m2.5': ['anthropic-messages', 'https://opencode.ai/zen/go'],
+  'qwen3.8-flash': ['anthropic-messages', 'https://opencode.ai/zen/go'],
+  'qwen3.5-plus': ['anthropic-messages', 'https://opencode.ai/zen/go'],
+  'grok-4.6': ['openai-responses', 'https://opencode.ai/zen/go/v1'],
+  'muse-spark-1.3-contributor': ['openai-responses', 'https://opencode.ai/zen/go/v1'],
+  'muse-spark-1.2-contributor': ['openai-responses', 'https://opencode.ai/zen/go/v1'],
+}
+
 /** One request modality a pi-ai model may accept. */
 export type PiAiModality = Model<Api>['input'][number]
 
@@ -850,12 +876,34 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
     if (seen.has(entry.id)) invalid(provider, `lists model "${entry.id}" more than once`)
     seen.add(entry.id)
     const base = defaults.get(entry.id)
-    const api = request.api ?? base?.api ?? routeApi
+    let api = request.api ?? base?.api ?? routeApi
+    let baseUrl = request.baseURL ?? base?.baseUrl ?? providerBaseUrl
+    // Catalog-unknown models on mixed-protocol routes cannot inherit a
+    // route-wide protocol: resolve docs-attested ids from GO_DOC_PROTOCOLS,
+    // then any listable catalog sibling, before refusing the route.
+    if ((api === undefined || baseUrl === undefined) && base === undefined && defaults.size > 0) {
+      const documented = provider === 'opencode-go' ? GO_DOC_PROTOCOLS[entry.id] : undefined
+      if (documented !== undefined) {
+        api ??= documented[0]
+        baseUrl ??= documented[1]
+      } else {
+        const sibling = [...defaults.values()].find(
+          model => model.api === 'openai-completions'
+            && typeof model.baseUrl === 'string'
+            && model.baseUrl.length > 0,
+        ) ?? [...defaults.values()].find(
+          model => typeof model.baseUrl === 'string' && model.baseUrl.length > 0,
+        )
+        if (sibling !== undefined) {
+          api ??= sibling.api
+          baseUrl ??= sibling.baseUrl
+        }
+      }
+    }
     if (api === undefined) {
       invalid(provider, `model "${entry.id}" needs an api; the installed catalog does not describe it, so set the`
         + ' route\'s api to the wire protocol its endpoint speaks')
     }
-    const baseUrl = request.baseURL ?? base?.baseUrl ?? providerBaseUrl
     if (baseUrl === undefined) {
       invalid(provider, `model "${entry.id}" needs a baseURL; the installed catalog does not describe this route`)
     }

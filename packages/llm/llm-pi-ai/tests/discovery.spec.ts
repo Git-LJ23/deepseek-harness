@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { userAgent } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
-import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 import { discoverModels } from '../src/discovery.ts'
 
 const servers: Server[] = []
@@ -74,18 +73,16 @@ async function harness(): Promise<Context> {
 }
 
 describe('catalog-route model discovery', () => {
-  it('answers from the installed registry, with capacities and no network call', async () => {
+  it('prefers an explicitly configured endpoint over the installed registry', async () => {
     const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'from-the-endpoint' }] }) })
     const ctx = await harness()
 
     const models = await ctx.llm.discoverModels('llm-pi-ai', { provider: 'deepseek', baseURL: server.url })
 
-    // pi-ai's own registry is the authority for its own providers, and it
-    // carries what a listing endpoint would not disclose.
-    expect(models.map(model => model.id).sort())
-      .toEqual(getBuiltinModels('deepseek').map(model => model.id).sort())
-    expect(models.every(model => (model.contextWindow ?? 0) > 0 && (model.maxTokens ?? 0) > 0)).toBe(true)
-    expect(server.paths).toEqual([])
+    // The draft names its endpoint, so it is enumerated live: the bundled
+    // snapshot cannot know a provider's newest releases.
+    expect(models.map(model => model.id)).toEqual(['from-the-endpoint'])
+    expect(server.paths.length).toBeGreaterThan(0)
   })
 
   it('needs no endpoint for a route the catalog describes', async () => {
@@ -422,7 +419,9 @@ describe('draft-provider model discovery', () => {
   it('is offered for the namespace, and refuses one it does not serve', async () => {
     const ctx = await harness()
 
-    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai' })).resolves.not.toHaveLength(0)
+    // openai-codex speaks a protocol with no readable listing, so this stays
+    // hermetic: the bundled entries answer without network traffic.
+    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai-codex' })).resolves.not.toHaveLength(0)
     await expect(ctx.llm.discoverModels('llm-deepseek', { baseURL: 'https://api.deepseek.com' }))
       .rejects.toMatchObject({ code: 'NO_DISCOVERY' })
     await expect(ctx.llm.discoverModels('llm-pi-ai', { baseURL: '' }))
@@ -433,11 +432,11 @@ describe('draft-provider model discovery', () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     const fiber = await ctx.plugin(LlmPiAi, {})
-    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai' })).resolves.not.toHaveLength(0)
+    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai-codex' })).resolves.not.toHaveLength(0)
 
     await fiber.dispose()
 
-    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai' }))
+    await expect(ctx.llm.discoverModels('llm-pi-ai', { provider: 'openai-codex' }))
       .rejects.toMatchObject({ code: 'NO_DISCOVERY' })
   })
 })
